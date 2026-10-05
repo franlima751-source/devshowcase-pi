@@ -1,6 +1,8 @@
 const express = require('express');
 const cors = require('cors');
 const { PrismaClient } = require('@prisma/client');
+const swaggerUi = require('swagger-ui-express');
+const swaggerDocument = require('./swagger.json');
 
 const app = express();
 const prisma = new PrismaClient();
@@ -8,82 +10,112 @@ const prisma = new PrismaClient();
 app.use(cors());
 app.use(express.json());
 
-// --- ROTAS DE PERFIL ---
-// POST /api/profiles - Cadastrar perfil
-app.post('/api/profiles', async (req, res) => {
-  const { name, email, bio } = req.body;
-  if (!name || !email) {
-    return res.status(400).json({ error: 'Nome e email são obrigatórios.' });
-  }
+// Documentação Swagger/OpenAPI
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
+
+// --- ENDPOINTS REST ---
+
+// POST /api/profiles
+app.post('/api/profiles', async (req, res, next) => {
   try {
+    const { name, email, bio } = req.body;
+    if (!name || !email) {
+      return res.status(400).json({ error: '400 Bad Request: Nome e email são obrigatórios.' });
+    }
     const profile = await prisma.profile.create({ data: { name, email, bio } });
-    return res.status(201).json(profile);
+    res.status(201).json(profile);
   } catch (error) {
-    return res.status(400).json({ error: 'Erro ao criar perfil ou email já existente.' });
+    next(error);
   }
 });
 
-// GET /api/profiles/:id - Buscar perfil por id
-app.get('/api/profiles/:id', async (req, res) => {
-  const { id } = req.params;
-  const profile = await prisma.profile.findUnique({
-    where: { id: Number(id) },
-    include: { projects: true }
-  });
-  if (!profile) return res.status(404).json({ error: 'Perfil não encontrado.' });
-  return res.json(profile);
-});
-
-// --- ROTAS DE TECNOLOGIAS ---
-// POST /api/technologies - Cadastrar tecnologia
-app.post('/api/technologies', async (req, res) => {
-  const { name } = req.body;
-  if (!name) return res.status(400).json({ error: 'Nome é obrigatório.' });
-
-  const tech = await prisma.technology.create({ data: { name } });
-  return res.status(201).json(tech);
-});
-
-// GET /api/technologies - Listar todas as tecnologias
-app.get('/api/technologies', async (req, res) => {
-  const techs = await prisma.technology.findMany();
-  return res.json(techs);
-});
-
-// --- ROTAS DE PROJETOS ---
-// POST /api/projects - Cadastrar projeto
-app.post('/api/projects', async (req, res) => {
-  const { title, description, url, profileId, technologyIds } = req.body;
-  if (!title || !url || !profileId) {
-    return res.status(400).json({ error: 'Título, URL e profileId são obrigatórios.' });
-  }
-
+// GET /api/projects com filtragem por tecnologia e paginação
+app.get('/api/projects', async (req, res, next) => {
   try {
-    const project = await prisma.project.create({
-      data: {
-        title,
-        description,
-        url,
-        profileId: Number(profileId),
-        technologies: technologyIds ? { connect: technologyIds.map(id => ({ id })) } : undefined
-      },
-      include: { technologies: true }
+    const { tech, page = 1, limit = 10 } = req.query;
+    const skip = (Number(page) - 1) * Number(limit);
+
+    const where = tech ? {
+      technologies: { some: { name: { contains: String(tech) } } }
+    } : {};
+
+    const projects = await prisma.project.findMany({
+      where,
+      take: Number(limit),
+      skip: skip,
+      include: { profile: true, technologies: true, feedbacks: true }
     });
-    return res.status(201).json(project);
+
+    res.json({ page: Number(page), limit: Number(limit), data: projects });
   } catch (error) {
-    return res.status(400).json({ error: 'Erro ao criar projeto.' });
+    next(error);
   }
 });
 
-// GET /api/projects - Listar todos os projetos
-app.get('/api/projects', async (req, res) => {
-  const projects = await prisma.project.findMany({
-    include: { profile: true, technologies: true, feedbacks: true }
+// POST /api/projects/:id/feedbacks (Cadastrar nota de 1 a 5 e recalcular média)
+app.post('/api/projects/:id/feedbacks', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { rating, comment } = req.body;
+
+    if (!rating || rating < 1 || rating > 5 || !comment) {
+      return res.status(400).json({ error: '400 Bad Request: A nota deve ser entre 1 e 5 e o comentário é obrigatório.' });
+    }
+
+    const projectExists = await prisma.project.findUnique({ where: { id: Number(id) } });
+    if (!projectExists) {
+      return res.status(404).json({ error: '404 Not Found: Projeto não encontrado.' });
+    }
+
+    await prisma.feedback.create({
+      data: { rating: Number(rating), comment, projectId: Number(id) }
+    });
+
+    // Recalcular nota média
+    const feedbacks = await prisma.feedback.findMany({ where: { projectId: Number(id) } });
+    const totalRating = feedbacks.reduce((acc, item) => acc + item.rating, 0);
+    const average = totalRating / feedbacks.length;
+
+    const updatedProject = await prisma.project.update({
+      where: { id: Number(id) },
+      data: { averageRating: average }
+    });
+
+    res.status(201).json({ message: 'Feedback adicionado com sucesso', project: updatedProject });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// PUT /api/projects/:id/upvote (Incrementar curtidas/estrelas)
+app.put('/api/projects/:id/upvote', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    const projectExists = await prisma.project.findUnique({ where: { id: Number(id) } });
+    if (!projectExists) {
+      return res.status(404).json({ error: '404 Not Found: Projeto não encontrado.' });
+    }
+
+    const updatedProject = await prisma.project.update({
+      where: { id: Number(id) },
+      data: { upvotes: { increment: 1 } }
+    });
+
+    res.json(updatedProject);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// --- MANIPULADOR GLOBAL DE ERROS ---
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).json({
+    error: '500 Internal Server Error',
+    message: err.message || 'Ocorreu um erro interno no servidor.'
   });
-  return res.json(projects);
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(Servidor rodando na porta ${PORT});
-});
+app.listen(PORT, () => console.log(Servidor a rodar na porta ${PORT}));
