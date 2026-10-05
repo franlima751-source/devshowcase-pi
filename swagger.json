@@ -1,0 +1,33 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "DevShowcase API",
+    "version": "2.0.0",
+    "description": "Documentação da API do DevShowcase"
+  },
+  "paths": {
+    "/api/projects": {
+      "get": {
+        "summary": "Listar projetos com paginação e filtro por tecnologia",
+        "parameters": [
+          { "name": "tech", "in": "query", "schema": { "type": "string" } },
+          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 10 } }
+        ],
+        "responses": { "200": { "description": "Sucesso" } }
+      }
+    },
+    "/api/projects/{id}/feedbacks": {
+      "post": {
+        "summary": "Cadastrar avaliação (nota de 1 a 5 e comentário)",
+        "responses": { "201": { "description": "Criado" }, "400": { "description": "Erro de validação" } }
+      }
+    },
+    "/api/projects/{id}/upvote": {
+      "put": {
+        "summary": "Incrementar curtidas/estrelas",
+        "responses": { "200": { "description": "Sucesso" }, "404": { "description": "Projeto não encontrado" } }
+      }
+    }
+  }
+}
